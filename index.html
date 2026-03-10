@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>PIXEL VOID</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#000; display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; }
+canvas { border:2px solid #00ff44; display:block; }
+#msg { color:#00ff44; font-family:monospace; font-size:14px; margin-top:8px; letter-spacing:2px; }
+</style>
+</head>
+<body>
+<canvas id="c" width="480" height="600"></canvas>
+<div id="msg">CLICK CANVAS THEN PRESS SPACE TO START</div>
+<script>
+const cv = document.getElementById('c');
+const cx = cv.getContext('2d');
+const W = 480, H = 600;
+
+// ===== PIXEL SPRITES (arrays of [x,y,colorIndex] at scale 1, origin top-left) =====
+// Colors: 0=body, 1=accent, 2=dark, 3=engine
+function makeSpritePixels(grid, colors) {
+  const pixels = [];
+  for (let r = 0; r < grid.length; r++) {
+    for (let c = 0; c < grid[r].length; c++) {
+      const v = grid[r][c];
+      if (v > 0) pixels.push([c, r, colors[v-1]]);
+    }
+  }
+  return { pixels, w: grid[0].length, h: grid.length };
+}
+
+const SPR = {
+  player: makeSpritePixels([
+    [0,0,0,0,1,1,0,0,0,0],
+    [0,0,0,1,2,2,1,0,0,0],
+    [0,0,1,2,2,2,2,1,0,0],
+    [0,1,1,2,1,1,2,1,1,0],
+    [1,1,2,2,2,2,2,2,1,1],
+    [1,2,2,1,0,0,1,2,2,1],
+    [1,1,0,0,0,0,0,0,1,1],
+  ], ['#55ddff','#ffffff','#0088cc']),
+
+  grunt: makeSpritePixels([
+    [0,1,0,0,0,0,1,0],
+    [0,1,1,1,1,1,1,0],
+    [1,2,1,1,1,1,2,1],
+    [1,2,2,2,2,2,2,1],
+    [0,1,2,1,1,2,1,0],
+    [0,0,1,0,0,1,0,0],
+  ], ['#ff44cc','#ffffff','#aa0088']),
+
+  scout: makeSpritePixels([
+    [0,0,1,1,1,1,0,0],
+    [0,1,2,2,2,2,1,0],
+    [1,2,2,1,1,2,2,1],
+    [1,2,1,2,2,1,2,1],
+    [0,1,0,1,1,0,1,0],
+  ], ['#9944ff','#ffffff','#5500cc']),
+
+  tank: makeSpritePixels([
+    [1,1,0,1,1,0,1,1],
+    [1,2,1,2,2,1,2,1],
+    [1,2,2,2,2,2,2,1],
+    [1,2,2,2,2,2,2,1],
+    [1,2,1,1,1,1,2,1],
+    [1,1,0,0,0,0,1,1],
+  ], ['#ff8833','#ffffff','#993300']),
+
+  boss: makeSpritePixels([
+    [0,1,0,0,0,0,0,0,1,0],
+    [1,2,1,0,0,0,0,1,2,1],
+    [1,2,2,1,1,1,1,2,2,1],
+    [1,2,2,2,2,2,2,2,2,1],
+    [2,2,2,1,2,2,1,2,2,2],
+    [1,2,2,2,2,2,2,2,2,1],
+    [0,1,2,2,2,2,2,2,1,0],
+    [0,0,1,2,1,1,2,1,0,0],
+    [0,1,1,0,1,1,0,1,1,0],
+  ], ['#ff2244','#ffaa00','#880022']),
+};
+
+function drawSprite(spr, px, py, scale, flash) {
+  const ox = Math.round(px - spr.w * scale / 2);
+  const oy = Math.round(py - spr.h * scale / 2);
+  for (const [x, y, col] of spr.pixels) {
+    cx.fillStyle = flash ? '#ffffff' : col;
+    cx.fillRect(ox + x*scale, oy + y*scale, scale, scale);
+  }
+}
+
+function drawFlame(x, y, tick) {
+  const big = tick % 8 < 4;
+  // left engine
+  cx.fillStyle = '#ff6600';
+  cx.fillRect(x-12, y, 6, big?12:9);
+  cx.fillStyle = '#ffdd00';
+  cx.fillRect(x-11, y, 4, big?9:6);
+  cx.fillStyle = '#ffffff';
+  cx.fillRect(x-10, y, 2, 3);
+  // right engine
+  cx.fillStyle = '#ff6600';
+  cx.fillRect(x+6, y, 6, big?12:9);
+  cx.fillStyle = '#ffdd00';
+  cx.fillRect(x+7, y, 4, big?9:6);
+  cx.fillStyle = '#ffffff';
+  cx.fillRect(x+8, y, 2, 3);
+}
+
+// ===== BITMAP FONT =====
+const FONT = {
+  '0':[[1,1,1],[1,0,1],[1,0,1],[1,0,1],[1,1,1]],
+  '1':[[0,1,0],[1,1,0],[0,1,0],[0,1,0],[1,1,1]],
+  '2':[[1,1,1],[0,0,1],[1,1,1],[1,0,0],[1,1,1]],
+  '3':[[1,1,1],[0,0,1],[0,1,1],[0,0,1],[1,1,1]],
+  '4':[[1,0,1],[1,0,1],[1,1,1],[0,0,1],[0,0,1]],
+  '5':[[1,1,1],[1,0,0],[1,1,1],[0,0,1],[1,1,1]],
+  '6':[[1,1,1],[1,0,0],[1,1,1],[1,0,1],[1,1,1]],
+  '7':[[1,1,1],[0,0,1],[0,1,0],[0,1,0],[0,1,0]],
+  '8':[[1,1,1],[1,0,1],[1,1,1],[1,0,1],[1,1,1]],
+  '9':[[1,1,1],[1,0,1],[1,1,1],[0,0,1],[1,1,1]],
+  'A':[[0,1,0],[1,0,1],[1,1,1],[1,0,1],[1,0,1]],
+  'B':[[1,1,0],[1,0,1],[1,1,0],[1,0,1],[1,1,0]],
+  'C':[[1,1,1],[1,0,0],[1,0,0],[1,0,0],[1,1,1]],
+  'D':[[1,1,0],[1,0,1],[1,0,1],[1,0,1],[1,1,0]],
+  'E':[[1,1,1],[1,0,0],[1,1,0],[1,0,0],[1,1,1]],
+  'F':[[1,1,1],[1,0,0],[1,1,0],[1,0,0],[1,0,0]],
+  'G':[[1,1,1],[1,0,0],[1,0,1],[1,0,1],[1,1,1]],
+  'H':[[1,0,1],[1,0,1],[1,1,1],[1,0,1],[1,0,1]],
+  'I':[[1,1,1],[0,1,0],[0,1,0],[0,1,0],[1,1,1]],
+  'J':[[0,0,1],[0,0,1],[0,0,1],[1,0,1],[1,1,1]],
+  'K':[[1,0,1],[1,1,0],[1,0,0],[1,1,0],[1,0,1]],
+  'L':[[1,0,0],[1,0,0],[1,0,0],[1,0,0],[1,1,1]],
+  'M':[[1,0,1],[1,1,1],[1,0,1],[1,0,1],[1,0,1]],
+  'N':[[1,0,1],[1,1,1],[1,1,1],[1,0,1],[1,0,1]],
+  'O':[[1,1,1],[1,0,1],[1,0,1],[1,0,1],[1,1,1]],
+  'P':[[1,1,0],[1,0,1],[1,1,0],[1,0,0],[1,0,0]],
+  'Q':[[1,1,1],[1,0,1],[1,0,1],[1,1,1],[0,0,1]],
+  'R':[[1,1,0],[1,0,1],[1,1,0],[1,0,1],[1,0,1]],
+  'S':[[1,1,1],[1,0,0],[1,1,1],[0,0,1],[1,1,1]],
+  'T':[[1,1,1],[0,1,0],[0,1,0],[0,1,0],[0,1,0]],
+  'U':[[1,0,1],[1,0,1],[1,0,1],[1,0,1],[1,1,1]],
+  'V':[[1,0,1],[1,0,1],[1,0,1],[1,0,1],[0,1,0]],
+  'W':[[1,0,1],[1,0,1],[1,0,1],[1,1,1],[1,0,1]],
+  'X':[[1,0,1],[1,0,1],[0,1,0],[1,0,1],[1,0,1]],
+  'Y':[[1,0,1],[1,0,1],[0,1,0],[0,1,0],[0,1,0]],
+  'Z':[[1,1,1],[0,0,1],[0,1,0],[1,0,0],[1,1,1]],
+  ' ':[[0,0],[0,0],[0,0],[0,0],[0,0]],
+  ':':[[0],[1],[0],[1],[0]],
+  '-':[[0,0,0],[0,0,0],[1,1,1],[0,0,0],[0,0,0]],
+  '!':[[1],[1],[1],[0],[1]],
+  '>':[[1,0],[0,1],[0,0],[0,1],[1,0]],
+};
+
+function textWidth(str, scale) {
+  let w = 0;
+  for (const ch of str.toUpperCase()) {
+    const g = FONT[ch];
+    w += g ? (g[0].length + 1) * scale : 3 * scale;
+  }
+  return w;
+}
+
+function drawText(str, x, y, color, scale, align) {
+  scale = scale || 2;
+  color = color || '#00ff44';
+  const tw = textWidth(str, scale);
+  let dx = align === 'center' ? x - tw/2 : align === 'right' ? x - tw : x;
+  for (const ch of str.toUpperCase()) {
+    const g = FONT[ch];
+    if (!g) { dx += 3*scale; continue; }
+    for (let r = 0; r < g.length; r++) {
+      for (let c = 0; c < g[r].length; c++) {
+        if (g[r][c]) {
+          cx.fillStyle = color;
+          cx.fillRect(Math.round(dx + c*scale), Math.round(y + r*scale), scale, scale);
+        }
+      }
+    }
+    dx += (g[0].length + 1) * scale;
+  }
+}
+
+// ===== GAME STATE =====
+let state = 'menu'; // menu | playing | paused | gameover
+let tick = 0, score = 0, hiscore = 0, lives = 3, wave = 1;
+let player, bullets, ebullets, enemies, particles, stars, powerups;
+let shootCD = 0, spawnT = 0;
+let boss = null;
+const KEYS = {};
+
+function initGame() {
+  score = 0; lives = 3; wave = 1; tick = 0;
+  boss = null; shootCD = 0; spawnT = 60;
+  player = { x: W/2, y: H-70, inv: 0, rapid: 0, spread: 0 };
+  bullets = []; ebullets = []; enemies = [];
+  particles = []; powerups = [];
+  // keep stars if already made
+  if (!stars) makeStars();
+}
+
+function makeStars() {
+  stars = [];
+  for (let i = 0; i < 120; i++) {
+    stars.push({
+      x: Math.random()*W, y: Math.random()*H,
+      s: 0.4+Math.random()*1.4, sz: Math.random()<0.1?2:1, b: Math.random()*100
+    });
+  }
+}
+
+// ===== HELPERS =====
+function col(ax,ay,aw,ah,bx,by,bw,bh) {
+  return ax < bx+bw && ax+aw > bx && ay < by+bh && ay+ah > by;
+}
+function explode(x, y, n, cols) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random()*Math.PI*2, sp = 0.5+Math.random()*4;
+    particles.push({
+      x, y, vx:Math.cos(a)*sp, vy:Math.sin(a)*sp-0.5,
+      col: cols[Math.floor(Math.random()*cols.length)],
+      sz: 2+Math.floor(Math.random()*4), life:20+Math.random()*20
+    });
+  }
+}
+function spawnPU(x,y) {
+  const types=['rapid','spread','health'];
+  powerups.push({x, y, vy:1.1, type:types[Math.floor(Math.random()*types.length)]});
+}
+function addEnemy() {
+  const r = Math.random();
+  const type = r < 0.5 ? 'grunt' : r < 0.8 ? 'scout' : 'tank';
+  const hpMap = {grunt:1, scout:2, tank:5};
+  enemies.push({
+    x: 30+Math.random()*(W-60), y:-40,
+    type, hp:hpMap[type], maxHp:hpMap[type], flash:0,
+    spd: 0.8+Math.random()*0.7+wave*0.1,
+    sway: Math.random()*Math.PI*2, swayA:20+Math.random()*40, swayS:0.015+Math.random()*0.02,
+    st: 60+Math.random()*100,
+    bx: 30+Math.random()*(W-60),
+  });
+}
+function addBoss() {
+  const hp = 60+wave*30;
+  boss = {x:W/2, y:90, hp, maxHp:hp, flash:0, dir:1, spd:1.3, st:40, phase:0};
+}
+
+// ===== UPDATE =====
+function update() {
+  tick++;
+  if (player.inv > 0) player.inv--;
+  if (player.rapid > 0) player.rapid--;
+  if (player.spread > 0) player.spread--;
+  if (shootCD > 0) shootCD--;
+
+  // Move player
+  if (KEYS['ArrowLeft']||KEYS['a']||KEYS['A']) player.x = Math.max(18, player.x-3.5);
+  if (KEYS['ArrowRight']||KEYS['d']||KEYS['D']) player.x = Math.min(W-18, player.x+3.5);
+  if ((KEYS[' ']||KEYS['z']||KEYS['Z']) && shootCD <= 0) {
+    bullets.push({x:player.x, y:player.y-20, vy:-11, vx:0});
+    if (player.spread > 0) {
+      bullets.push({x:player.x, y:player.y-16, vy:-10, vx:-3});
+      bullets.push({x:player.x, y:player.y-16, vy:-10, vx: 3});
+    }
+    shootCD = player.rapid>0 ? 6 : 14;
+  }
+
+  // Player bullets
+  bullets = bullets.filter(b => b.y > -10 && b.x > -10 && b.x < W+10);
+  for (const b of bullets) { b.x += b.vx; b.y += b.vy; }
+
+  // Enemy bullets
+  ebullets = ebullets.filter(b => b.y < H+20 && b.x > -20 && b.x < W+20);
+  for (const b of ebullets) { b.x += b.vx; b.y += b.vy; }
+
+  // Spawn enemies
+  if (!boss) {
+    if (--spawnT <= 0) {
+      addEnemy();
+      spawnT = Math.max(20, 70-wave*6);
+    }
+    if (score > 0 && score % 500 < 15 && enemies.length === 0) addBoss();
+  }
+
+  // Move enemies
+  for (const e of enemies) {
+    e.sway += e.swayS;
+    e.x = Math.max(20, Math.min(W-20, e.bx + Math.sin(e.sway)*e.swayA));
+    e.y += e.spd;
+    if (e.flash > 0) e.flash--;
+    if (--e.st <= 0) {
+      const dx=player.x-e.x, dy=player.y-e.y, d=Math.sqrt(dx*dx+dy*dy)||1;
+      const sp = 3+wave*0.15;
+      ebullets.push({x:e.x, y:e.y+12, vx:(dx/d)*sp, vy:(dy/d)*sp});
+      e.st = 70+Math.random()*90;
+    }
+  }
+
+  // Boss
+  if (boss) {
+    boss.x += boss.spd*boss.dir;
+    if (boss.x > W-55 || boss.x < 55) boss.dir *= -1;
+    boss.phase = boss.hp < boss.maxHp*.33 ? 2 : boss.hp < boss.maxHp*.66 ? 1 : 0;
+    if (boss.flash > 0) boss.flash--;
+    if (--boss.st <= 0) {
+      const n = boss.phase===2 ? 5 : boss.phase===1 ? 3 : 1;
+      for (let i=0;i<n;i++) {
+        const a = (Math.PI/2)+(i-(n-1)/2)*0.38;
+        ebullets.push({x:boss.x, y:boss.y+30, vx:Math.cos(a)*4, vy:Math.sin(a)*4});
+      }
+      boss.st = boss.phase===2?14:boss.phase===1?22:36;
+    }
+  }
+
+  // Player bullets vs enemies+boss
+  for (let bi = bullets.length-1; bi >= 0; bi--) {
+    const b = bullets[bi];
+    // vs boss
+    if (boss && col(b.x-2,b.y-5,4,10,boss.x-30,boss.y-27,60,54)) {
+      bullets.splice(bi,1); boss.hp--; boss.flash=6;
+      if (boss.hp <= 0) {
+        explode(boss.x,boss.y,80,['#ff2244','#ff8800','#ffdd00','#ffffff']);
+        score += 300+wave*50; boss=null; wave++;
+        if (Math.random()<0.7) spawnPU(W/2, H/2);
+      }
+      continue;
+    }
+    // vs enemy
+    let hit2 = false;
+    for (let ei = enemies.length-1; ei >= 0; ei--) {
+      const e = enemies[ei], ew = e.type==='tank'?22:16;
+      if (col(b.x-2,b.y-5,4,10, e.x-ew/2,e.y-15,ew,30)) {
+        bullets.splice(bi,1); e.hp--; e.flash=6; hit2=true;
+        if (e.hp <= 0) {
+          explode(e.x,e.y,20,['#ff44cc','#9944ff','#ff8833','#ffffff']);
+          score += e.type==='grunt'?10:e.type==='scout'?25:60;
+          if (Math.random()<0.15) spawnPU(e.x,e.y);
+          enemies.splice(ei,1);
+        }
+        break;
+      }
+      if (hit2) break;
+    }
+  }
+
+  // Enemy bullets vs player
+  if (player.inv <= 0) {
+    for (let bi = ebullets.length-1; bi >= 0; bi--) {
+      const b = ebullets[bi];
+      if (col(b.x-4,b.y-4,8,8, player.x-14,player.y-16,28,32)) {
+        ebullets.splice(bi,1);
+        explode(player.x,player.y,30,['#55ddff','#ffffff','#00ff88']);
+        lives--; player.inv=120;
+        if (lives <= 0) { state='gameover'; if(score>hiscore) hiscore=score; return; }
+      }
+    }
+  }
+
+  // Remove enemies past bottom
+  enemies = enemies.filter(e => {
+    if (e.y > H+40) { lives = Math.max(0,lives-1); if(lives<=0){state='gameover';if(score>hiscore)hiscore=score;} return false; }
+    return true;
+  });
+
+  // Powerups
+  powerups = powerups.filter(p => {
+    p.y += p.vy;
+    if (col(p.x-8,p.y-8,16,16, player.x-14,player.y-14,28,28)) {
+      if (p.type==='health') lives=Math.min(5,lives+1);
+      else if (p.type==='rapid') player.rapid=360;
+      else player.spread=360;
+      explode(p.x,p.y,15,['#ffdd00','#ffffff','#00ff88']);
+      return false;
+    }
+    return p.y < H+20;
+  });
+
+  // Particles
+  for (const p of particles) { p.x+=p.vx; p.y+=p.vy; p.vy+=0.06; p.life--; }
+  particles = particles.filter(p => p.life > 0);
+
+  if (score > hiscore) hiscore = score;
+}
+
+// ===== DRAW =====
+function draw() {
+  // Background
+  cx.fillStyle = '#000010';
+  cx.fillRect(0,0,W,H);
+
+  // Stars
+  for (const s of stars) {
+    const a = 0.2+0.8*(0.5+0.5*Math.sin(tick*0.05+s.b));
+    cx.fillStyle = `rgba(180,220,255,${a.toFixed(2)})`;
+    cx.fillRect(Math.round(s.x), Math.round(s.y), s.sz, s.sz);
+    s.y += s.s;
+    if (s.y > H) { s.y = -2; s.x = Math.random()*W; }
+  }
+
+  if (state === 'menu') {
+    // Show title + demo sprites
+    cx.fillStyle = 'rgba(0,0,0,0.5)';
+    cx.fillRect(0,0,W,H);
+
+    drawText('PIXEL VOID', W/2, 130, '#00ff44', 4, 'center');
+    drawText('SPACE SHOOTER', W/2, 185, '#004422', 2, 'center');
+
+    // Demo row of sprites
+    drawFlame(W/2, 302, tick);
+    drawSprite(SPR.player, W/2, 280, 4, false);
+    drawSprite(SPR.grunt,  W/2-110, 370, 3, false);
+    drawSprite(SPR.scout,  W/2-37,  370, 3, false);
+    drawSprite(SPR.tank,   W/2+40,  370, 3, false);
+    drawSprite(SPR.boss,   W/2+120, 365, 2, false);
+
+    drawText('GRUNT', W/2-110, 392, '#ff44cc', 1, 'center');
+    drawText('SCOUT', W/2-37,  392, '#9944ff', 1, 'center');
+    drawText('TANK',  W/2+40,  392, '#ff8833', 1, 'center');
+    drawText('BOSS',  W/2+120, 392, '#ff2244', 1, 'center');
+
+    drawText('CONTROLS', W/2, 425, '#334455', 2, 'center');
+    drawText('A D  OR  ARROWS  MOVE', W/2, 448, '#445566', 2, 'center');
+    drawText('SPACE  SHOOT', W/2, 468, '#445566', 2, 'center');
+    drawText('ESC  PAUSE', W/2, 488, '#445566', 2, 'center');
+
+    if (tick % 40 < 24) drawText('> PRESS SPACE TO START', W/2, 540, '#00ff44', 2, 'center');
+    return;
+  }
+
+  if (state === 'gameover') {
+    cx.fillStyle = 'rgba(0,0,0,0.5)';
+    cx.fillRect(0,0,W,H);
+    drawText('GAME OVER', W/2, 200, '#ff2244', 4, 'center');
+    drawText('SCORE  '+score,  W/2, 290, '#ffdd00', 2, 'center');
+    drawText('BEST   '+hiscore,W/2, 316, '#ff6688', 2, 'center');
+    if (tick % 40 < 24) drawText('> PRESS SPACE TO RETRY', W/2, 400, '#00ff44', 2, 'center');
+    return;
+  }
+
+  // ---- PLAYING / PAUSED ----
+
+  // Powerups
+  for (const p of powerups) {
+    const c = p.type==='rapid'?'#ffdd00':p.type==='spread'?'#44ccff':'#00ff88';
+    cx.fillStyle = c;
+    cx.fillRect(Math.round(p.x)-7, Math.round(p.y)-7, 14, 14);
+    cx.fillStyle = '#000';
+    cx.fillRect(Math.round(p.x)-4, Math.round(p.y)-4, 8, 8);
+    cx.fillStyle = c;
+    if (p.type==='rapid')  { cx.fillRect(Math.round(p.x)-1,Math.round(p.y)-3,2,6); cx.fillRect(Math.round(p.x)-3,Math.round(p.y)-1,6,2); }
+    if (p.type==='spread') { cx.fillRect(Math.round(p.x)-3,Math.round(p.y)-1,6,2); cx.fillRect(Math.round(p.x)-1,Math.round(p.y)-3,2,6); cx.fillRect(Math.round(p.x)-3,Math.round(p.y)+1,2,2); cx.fillRect(Math.round(p.x)+1,Math.round(p.y)+1,2,2); }
+    if (p.type==='health') { cx.fillRect(Math.round(p.x)-2,Math.round(p.y)-3,4,6); cx.fillRect(Math.round(p.x)-3,Math.round(p.y)-2,6,4); }
+  }
+
+  // Player bullets
+  for (const b of bullets) {
+    cx.fillStyle='#ffff00'; cx.fillRect(Math.round(b.x)-1,Math.round(b.y)-5,3,10);
+    cx.fillStyle='#ffffff'; cx.fillRect(Math.round(b.x)-1,Math.round(b.y)-5,3,3);
+  }
+
+  // Enemy bullets
+  for (const b of ebullets) {
+    cx.fillStyle='#ff4400';
+    cx.fillRect(Math.round(b.x)-3,Math.round(b.y)-3,6,6);
+    cx.fillStyle='rgba(255,80,0,0.4)';
+    cx.fillRect(Math.round(b.x)-5,Math.round(b.y)-5,10,10);
+  }
+
+  // Enemies
+  for (const e of enemies) drawSprite(SPR[e.type], e.x, e.y, 3, e.flash>0);
+
+  // Boss
+  if (boss) {
+    drawSprite(SPR.boss, boss.x, boss.y, 4, boss.flash>0);
+    const bw=120, bx=boss.x-60, by=boss.y-60;
+    cx.fillStyle='#330000'; cx.fillRect(Math.round(bx),Math.round(by),bw,6);
+    cx.fillStyle=boss.hp/boss.maxHp>0.5?'#ff2244':'#ff8800';
+    cx.fillRect(Math.round(bx),Math.round(by),Math.round(bw*(boss.hp/boss.maxHp)),6);
+    cx.strokeStyle='#ff8833'; cx.lineWidth=1; cx.strokeRect(Math.round(bx),Math.round(by),bw,6);
+    drawText('BOSS', boss.x, Math.round(by)-14, '#ff2244', 2, 'center');
+  }
+
+  // Player
+  const showP = player.inv<=0 || Math.floor(player.inv/5)%2===0;
+  if (showP) {
+    drawFlame(player.x, player.y+10, tick);
+    drawSprite(SPR.player, player.x, player.y, 3, false);
+  }
+  if (player.inv > 0) {
+    cx.strokeStyle = `rgba(85,221,255,${(player.inv%8)/8})`;
+    cx.lineWidth=2; cx.beginPath();
+    cx.ellipse(Math.round(player.x),Math.round(player.y),22,26,0,0,Math.PI*2); cx.stroke();
+  }
+
+  // Particles
+  for (const p of particles) {
+    cx.globalAlpha = Math.max(0, p.life/40);
+    cx.fillStyle = p.col;
+    cx.fillRect(Math.round(p.x-p.sz/2),Math.round(p.y-p.sz/2),p.sz,p.sz);
+  }
+  cx.globalAlpha=1;
+
+  // Scanlines
+  cx.fillStyle='rgba(0,0,0,0.06)';
+  for(let y=0;y<H;y+=3) cx.fillRect(0,y,W,1);
+
+  // HUD
+  drawText('SCORE', 10, 10, '#00aa44', 2);
+  drawText(String(score), 10, 24, '#ffffff', 2);
+  drawText('HI', W/2, 10, '#00aa44', 2, 'center');
+  drawText(String(hiscore), W/2, 24, '#ffffff', 2, 'center');
+  drawText('LIVES', W-10, 10, '#00aa44', 2, 'right');
+  for (let i=0;i<lives;i++) {
+    const hx = W-10 - (lives-i)*16, hy=24;
+    cx.fillStyle='#ff3366';
+    cx.fillRect(hx,hy+2,4,2); cx.fillRect(hx+6,hy+2,4,2);
+    cx.fillRect(hx-2,hy+4,14,2);
+    cx.fillRect(hx,hy+6,10,2); cx.fillRect(hx+2,hy+8,6,2); cx.fillRect(hx+4,hy+10,2,2);
+  }
+
+  if (player.rapid>0)  drawText('RAPID '+(Math.ceil(player.rapid/60))+'S',  10, H-40, '#ffdd00', 2);
+  if (player.spread>0) drawText('SPREAD '+(Math.ceil(player.spread/60))+'S', 10, H-56, '#44ccff', 2);
+
+  if (boss) drawText('BOSS WAVE '+wave, W/2, H-16, '#ff2244', 2, 'center');
+  else      drawText('WAVE '+wave,      W/2, H-16, '#223333', 2, 'center');
+
+  if (state === 'paused') {
+    cx.fillStyle='rgba(0,0,0,0.6)'; cx.fillRect(0,0,W,H);
+    drawText('PAUSED', W/2, H/2-16, '#00ff44', 4, 'center');
+    drawText('ESC TO RESUME', W/2, H/2+30, '#44ccff', 2, 'center');
+  }
+}
+
+// ===== MAIN LOOP =====
+function loop() {
+  if (state==='playing') update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+// ===== INPUT =====
+document.addEventListener('keydown', e => {
+  KEYS[e.key] = true;
+  if ([' ','ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)) e.preventDefault();
+  if (e.key==='Escape') {
+    if (state==='playing') state='paused';
+    else if (state==='paused') state='playing';
+  }
+  if (e.key===' ') {
+    if (state==='menu')     { initGame(); state='playing'; document.getElementById('msg').textContent=''; }
+    if (state==='gameover') { initGame(); state='playing'; }
+  }
+});
+document.addEventListener('keyup', e => { KEYS[e.key]=false; });
+cv.addEventListener('click', () => cv.focus());
+
+// ===== START =====
+makeStars();
+loop();
+</script>
+</body>
+</html>
